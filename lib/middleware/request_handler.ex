@@ -43,7 +43,11 @@ defmodule Middleware.RequestHandler do
       pending_requests: %{},
       total_requests: 0,
       completed_requests: 0,
-      timeout_requests: 0
+      timeout_requests: 0,
+      # Métricas de throughput
+      last_throughput_log: System.system_time(:second),
+      requests_last_window: 0,
+      completed_last_window: 0
     }
 
     Logger.info("Request handler started")
@@ -76,7 +80,8 @@ defmodule Middleware.RequestHandler do
 
     new_state = %{state |
       pending_requests: new_pending,
-      total_requests: state.total_requests + 1
+      total_requests: state.total_requests + 1,
+      requests_last_window: state.requests_last_window + 1
     }
 
     Logger.info("Request stored in pending before enqueue",
@@ -135,7 +140,8 @@ defmodule Middleware.RequestHandler do
 
     new_state = %{state |
       pending_requests: new_pending,
-      total_requests: state.total_requests + 1
+      total_requests: state.total_requests + 1,
+      requests_last_window: state.requests_last_window + 1
     }
 
     Logger.info("Request stored in pending FIRST",
@@ -222,12 +228,16 @@ defmodule Middleware.RequestHandler do
         new_pending = Map.delete(state.pending_requests, request_id)
         new_state = %{state |
           pending_requests: new_pending,
-          completed_requests: state.completed_requests + 1
+          completed_requests: state.completed_requests + 1,
+          completed_last_window: state.completed_last_window + 1
         }
 
         Logger.info("Response delivered successfully",
           request_id: request_id,
           status_code: response.status_code)
+
+        # Log throughput a cada 10 segundos
+        new_state = log_throughput_if_needed(new_state)
 
         {:noreply, new_state}
 
@@ -288,6 +298,36 @@ defmodule Middleware.RequestHandler do
     case Redix.command(:redix, ["LLEN", "request_queue"]) do
       {:ok, length} -> length
       _ -> 0
+    end
+  end
+
+  # Função para log de throughput
+  defp log_throughput_if_needed(state) do
+    current_time = System.system_time(:second)
+    time_since_last_log = current_time - state.last_throughput_log
+    
+    if time_since_last_log >= 10 do
+      requests_per_second = state.requests_last_window / time_since_last_log
+      completed_per_second = state.completed_last_window / time_since_last_log
+      success_rate = if state.requests_last_window > 0, 
+        do: state.completed_last_window / state.requests_last_window * 100, 
+        else: 0
+      
+      Logger.info("🚀 REQUEST HANDLER THROUGHPUT",
+        incoming_req_per_second: Float.round(requests_per_second, 2),
+        completed_req_per_second: Float.round(completed_per_second, 2),
+        success_rate: Float.round(success_rate, 1),
+        pending_requests: map_size(state.pending_requests),
+        queue_length: get_queue_length(),
+        total_completed: state.completed_requests)
+      
+      %{state | 
+        last_throughput_log: current_time,
+        requests_last_window: 0,
+        completed_last_window: 0
+      }
+    else
+      state
     end
   end
 end

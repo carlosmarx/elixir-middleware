@@ -12,9 +12,18 @@ services:
       - PORT=4000
       - REDIS_URL=redis://redis:6379
       - RAILS_URL=https://sistema.novosaque.com.br/api/v1/simulations/balance_proposal_fgts
-      - RATE_LIMIT=10
+      # Performance otimizada
+      - RATE_LIMIT=25
+      - BUCKET_SIZE=50
+      - REFILL_INTERVAL=50
+      - WORKER_COUNT=20
+      - POLL_INTERVAL=100
+      - BRPOP_TIMEOUT=5
+      - RAILS_TIMEOUT=25000
       - REQUEST_TIMEOUT=120000
-      - RAILS_TIMEOUT=110000
+      # Backpressure protection
+      - MAX_QUEUE_LENGTH=1000
+      - MAX_PENDING_REQUESTS=500
     depends_on:
       - redis
     restart: unless-stopped
@@ -27,7 +36,7 @@ services:
     container_name: redis-elixir-middleware
     ports:
       - "6389:6379"
-    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru
     restart: unless-stopped
     networks:
       - middleware-network

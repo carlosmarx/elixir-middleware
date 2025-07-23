@@ -7,9 +7,10 @@ defmodule Middleware.RateLimiter do
   use GenServer
   require Logger
 
-  @rate_limit 10  # 10 requisições por segundo
-  @bucket_size 10 # Burst capacity
-  @refill_interval 100 # 0.1 segundo em ms
+  # Configurações via variáveis de ambiente para melhor controle
+  defp rate_limit, do: String.to_integer(System.get_env("RATE_LIMIT", "25"))
+  defp bucket_size, do: String.to_integer(System.get_env("BUCKET_SIZE", "50"))
+  defp refill_interval, do: String.to_integer(System.get_env("REFILL_INTERVAL", "50"))
 
   # Client API
 
@@ -33,22 +34,28 @@ defmodule Middleware.RateLimiter do
 
   def init(_) do
     state = %{
-      tokens: @bucket_size,
+      tokens: bucket_size(),
       last_refill: System.monotonic_time(:millisecond),
       requests_this_second: 0,
       total_requests: 0,
       allowed_requests: 0,
       denied_requests: 0,
-      start_time: System.monotonic_time(:millisecond)
+      start_time: System.monotonic_time(:millisecond),
+      rate_limit: rate_limit(),
+      bucket_size: bucket_size(),
+      refill_interval: refill_interval(),
+      # Métricas de throughput
+      last_throughput_log: System.system_time(:second),
+      requests_last_window: 0
     }
 
     # Agendar refill periódico
-    schedule_refill()
+    schedule_refill(state.refill_interval)
 
     Logger.info("Rate limiter started",
-      rate_limit: @rate_limit,
-      bucket_size: @bucket_size,
-      refill_interval: @refill_interval)
+      rate_limit: state.rate_limit,
+      bucket_size: state.bucket_size,
+      refill_interval: state.refill_interval)
 
     {:ok, state}
   end
@@ -64,7 +71,8 @@ defmodule Middleware.RateLimiter do
         tokens: state.tokens - 1,
         total_requests: state.total_requests + 1,
         allowed_requests: state.allowed_requests + 1,
-        requests_this_second: state.requests_this_second + 1
+        requests_this_second: state.requests_this_second + 1,
+        requests_last_window: state.requests_last_window + 1
       }
 
       Logger.debug("Request allowed",
@@ -90,8 +98,8 @@ defmodule Middleware.RateLimiter do
     status = %{
       current_rate: state.requests_this_second,
       tokens_available: state.tokens,
-      rate_limit: @rate_limit,
-      bucket_size: @bucket_size,
+      rate_limit: state.rate_limit,
+      bucket_size: state.bucket_size,
       healthy: true
     }
 
@@ -110,7 +118,7 @@ defmodule Middleware.RateLimiter do
       requests_this_second: state.requests_this_second,
       success_rate: if(state.total_requests > 0, do: state.allowed_requests / state.total_requests * 100, else: 100),
       uptime_ms: uptime_ms,
-      rate_limit: @rate_limit
+      rate_limit: state.rate_limit
     }
 
     {:reply, metrics, state}
@@ -118,21 +126,43 @@ defmodule Middleware.RateLimiter do
 
   def handle_info(:refill, state) do
     now = System.monotonic_time(:millisecond)
+    current_time = System.system_time(:second)
     new_state = refill_tokens(state, now)
 
     # Reset contador por segundo a cada refill
     new_state = %{new_state | requests_this_second: 0}
 
+    # Log throughput a cada 5 segundos
+    time_since_last_log = current_time - state.last_throughput_log
+    new_state = if time_since_last_log >= 5 do
+      requests_per_second = state.requests_last_window / time_since_last_log
+      
+      Logger.info("📊 THROUGHPUT STATS",
+        req_per_second: Float.round(requests_per_second, 2),
+        requests_5s: state.requests_last_window,
+        total_requests: new_state.total_requests,
+        allowed_rate: Float.round(new_state.allowed_requests / new_state.total_requests * 100, 1),
+        tokens_available: new_state.tokens,
+        rate_limit: new_state.rate_limit)
+      
+      %{new_state | 
+        last_throughput_log: current_time,
+        requests_last_window: 0
+      }
+    else
+      new_state
+    end
+
     # Log estatísticas periodicamente
-    if rem(div(now, 1000), 10) == 0 do
-      Logger.info("Rate limiter stats",
+    if rem(div(now, 1000), 30) == 0 do
+      Logger.info("Rate limiter detailed stats",
         total: new_state.total_requests,
         allowed: new_state.allowed_requests,
         denied: new_state.denied_requests,
         tokens: new_state.tokens)
     end
 
-    schedule_refill()
+    schedule_refill(state.refill_interval)
     {:noreply, new_state}
   end
 
@@ -141,10 +171,10 @@ defmodule Middleware.RateLimiter do
   defp refill_tokens(state, now) do
     time_passed = now - state.last_refill
 
-    if time_passed >= @refill_interval do
-      # Adicionar tokens baseado no rate limit (3 tokens por segundo)
-      tokens_to_add = div(time_passed * @rate_limit, 1000)
-      new_tokens = min(state.tokens + tokens_to_add, @bucket_size)
+    if time_passed >= state.refill_interval do
+      # Adicionar tokens baseado no rate limit
+      tokens_to_add = div(time_passed * state.rate_limit, 1000)
+      new_tokens = min(state.tokens + tokens_to_add, state.bucket_size)
 
       %{state |
         tokens: new_tokens,
@@ -155,7 +185,7 @@ defmodule Middleware.RateLimiter do
     end
   end
 
-  defp schedule_refill do
-    Process.send_after(self(), :refill, @refill_interval)
+  defp schedule_refill(interval) do
+    Process.send_after(self(), :refill, interval)
   end
 end

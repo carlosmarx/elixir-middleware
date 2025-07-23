@@ -8,8 +8,10 @@ defmodule Middleware.Worker do
   use GenServer
   require Logger
 
-  @poll_interval 200  # Poll a cada 200ms (menos agressivo)
-  @rails_timeout 110_000  # 25 segundos para Rails
+  # Configurações otimizadas via variáveis de ambiente
+  defp poll_interval, do: String.to_integer(System.get_env("POLL_INTERVAL", "100"))
+  defp rails_timeout, do: String.to_integer(System.get_env("RAILS_TIMEOUT", "25000"))
+  defp brpop_timeout, do: String.to_integer(System.get_env("BRPOP_TIMEOUT", "5"))
 
   # Client API
 
@@ -33,7 +35,10 @@ defmodule Middleware.Worker do
       last_request_time: nil,
       last_rails_call: nil,
       status: :idle,
-      start_time: System.monotonic_time(:millisecond)
+      start_time: System.monotonic_time(:millisecond),
+      # Métricas de throughput
+      last_throughput_log: System.system_time(:second),
+      processed_last_window: 0
     }
 
     Logger.info("Worker started", worker_id: worker_id)
@@ -92,19 +97,23 @@ defmodule Middleware.Worker do
   # Private Functions
 
   defp schedule_next_check(state) do
-    # Ajustar intervalo baseado no status
+    base_interval = poll_interval()
+    
+    # Ajustar intervalo baseado no status e na carga da fila
     interval = case state.status do
-      :processing -> @poll_interval * 2  # Mais lento quando processando
-      :rate_limited -> @poll_interval * 5  # Muito mais lento quando rate limited
-      _ -> @poll_interval
+      :processing -> base_interval * 2  # Mais lento quando processando
+      :rate_limited -> base_interval * 3  # Reduzir throttling para melhor throughput
+      :error -> base_interval * 5  # Mais lento em caso de erro
+      _ -> base_interval
     end
 
     Process.send_after(self(), :process_queue, interval)
   end
 
   defp get_next_request_from_queue do
-    # Usar BRPOP com timeout baixo para não bloquear muito
-    case Redix.command(:redix, ["BRPOP", "request_queue", "1"]) do
+    # Usar BRPOP com timeout otimizado para melhor throughput
+    timeout = brpop_timeout()
+    case Redix.command(:redix, ["BRPOP", "request_queue", to_string(timeout)]) do
       {:ok, [_queue_name, json_data]} ->
         case Jason.decode(json_data) do
           {:ok, request_data} ->
@@ -172,12 +181,16 @@ defmodule Middleware.Worker do
           status_code: response.status_code,
           duration_ms: trunc(duration_ms))
 
-        %{state |
+        new_state = %{state |
           processed_count: state.processed_count + 1,
           successful_count: state.successful_count + 1,
           status: :idle,
-          last_rails_call: System.system_time(:second)
+          last_rails_call: System.system_time(:second),
+          processed_last_window: state.processed_last_window + 1
         }
+        
+        # Log throughput do worker a cada 30 segundos
+        log_worker_throughput_if_needed(new_state)
 
       {:error, reason} ->
         # Criar resposta de erro
@@ -199,12 +212,16 @@ defmodule Middleware.Worker do
           reason: reason,
           duration_ms: trunc(duration_ms))
 
-        %{state |
+        new_state = %{state |
           processed_count: state.processed_count + 1,
           failed_count: state.failed_count + 1,
           status: :idle,
-          last_rails_call: System.system_time(:second)
+          last_rails_call: System.system_time(:second),
+          processed_last_window: state.processed_last_window + 1
         }
+        
+        # Log throughput do worker a cada 30 segundos
+        log_worker_throughput_if_needed(new_state)
     end
   end
 
@@ -230,9 +247,10 @@ defmodule Middleware.Worker do
       url: rails_url,
       body_size: byte_size(body))
 
+    timeout = rails_timeout()
     case HTTPoison.post(rails_url, body, headers, [
-      timeout: @rails_timeout,
-      recv_timeout: @rails_timeout,
+      timeout: timeout,
+      recv_timeout: timeout,
       follow_redirect: true,
       max_redirect: 3
     ]) do
@@ -282,6 +300,33 @@ defmodule Middleware.Worker do
         Logger.error("Failed to requeue request",
           request_id: request_data["request_id"],
           reason: reason)
+    end
+  end
+
+  # Função para log de throughput do worker
+  defp log_worker_throughput_if_needed(state) do
+    current_time = System.system_time(:second)
+    time_since_last_log = current_time - state.last_throughput_log
+    
+    if time_since_last_log >= 30 do
+      processed_per_second = state.processed_last_window / time_since_last_log
+      success_rate = if state.processed_count > 0, 
+        do: state.successful_count / state.processed_count * 100, 
+        else: 0
+      
+      Logger.info("⚡ WORKER #{state.worker_id} THROUGHPUT",
+        processed_per_second: Float.round(processed_per_second, 2),
+        processed_30s: state.processed_last_window,
+        total_processed: state.processed_count,
+        success_rate: Float.round(success_rate, 1),
+        status: state.status)
+      
+      %{state | 
+        last_throughput_log: current_time,
+        processed_last_window: 0
+      }
+    else
+      state
     end
   end
 end

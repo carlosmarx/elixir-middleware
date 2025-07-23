@@ -42,10 +42,12 @@ defmodule Middleware.HttpServer do
         },
         queue: queue_stats,
         config: %{
-          rate_limit: 10,
+          rate_limit: String.to_integer(System.get_env("RATE_LIMIT", "25")),
           timeout_seconds: 120,
           elixir_version: System.version(),
-          workers: 6
+          workers: String.to_integer(System.get_env("WORKER_COUNT", "20")),
+          max_queue_length: String.to_integer(System.get_env("MAX_QUEUE_LENGTH", "1000")),
+          max_pending_requests: String.to_integer(System.get_env("MAX_PENDING_REQUESTS", "500"))
         }
       }
 
@@ -113,10 +115,22 @@ defmodule Middleware.HttpServer do
     end
   end
 
-  # Process endpoint - INTEGRAÇÃO COMPLETA
+  # Process endpoint - INTEGRAÇÃO COMPLETA COM BACKPRESSURE
   post "/process" do
     start_time = System.monotonic_time()
 
+    # Verificar backpressure antes de processar
+    case check_backpressure() do
+      :ok ->
+        process_request_normally(conn, start_time)
+      
+      {:error, reason} ->
+        Logger.warning("Request rejected due to backpressure", reason: reason)
+        json_error(conn, 503, "Service temporarily overloaded - #{reason}")
+    end
+  end
+
+  defp process_request_normally(conn, start_time) do
     with {:ok, auth_header} <- get_auth_header(conn),
          {:ok, body} <- get_request_body(conn),
          {:ok, cpf} <- extract_cpf(body),
@@ -154,6 +168,34 @@ defmodule Middleware.HttpServer do
     end
   end
 
+  # Função de backpressure para controlar sobrecarga
+  defp check_backpressure do
+    max_queue_length = String.to_integer(System.get_env("MAX_QUEUE_LENGTH", "1000"))
+    max_pending_requests = String.to_integer(System.get_env("MAX_PENDING_REQUESTS", "500"))
+    
+    # Verificar tamanho da fila Redis
+    case Redix.command(:redix, ["LLEN", "request_queue"]) do
+      {:ok, queue_length} when queue_length > max_queue_length ->
+        {:error, "queue_full (#{queue_length}/#{max_queue_length})"}
+      
+      {:ok, queue_length} ->
+        # Verificar requests pendentes no RequestHandler
+        case Middleware.RequestHandler.get_stats() do
+          %{pending_requests: pending} when pending > max_pending_requests ->
+            {:error, "too_many_pending (#{pending}/#{max_pending_requests})"}
+          
+          _ ->
+            Logger.debug("Backpressure check passed", 
+              queue_length: queue_length, 
+              max_queue: max_queue_length)
+            :ok
+        end
+      
+      {:error, _} ->
+        {:error, "redis_unavailable"}
+    end
+  end
+
   # Nova função que usa enqueue_and_wait atômica
   defp enqueue_and_wait(request_id, cpf, auth_header, body) do
     Middleware.RequestHandler.enqueue_and_wait(request_id, cpf, auth_header, body, 120_000)
@@ -163,7 +205,8 @@ defmodule Middleware.HttpServer do
   get "/workers" do
     try do
       # Coletar stats de todos os workers individualmente
-      worker_stats = for i <- 1..3 do
+      worker_count = String.to_integer(System.get_env("WORKER_COUNT", "20"))
+      worker_stats = for i <- 1..worker_count do
         case Middleware.Worker.get_stats(i) do
           stats when is_map(stats) -> stats
           _ -> %{worker_id: i, error: "unavailable"}
@@ -183,6 +226,62 @@ defmodule Middleware.HttpServer do
     rescue
       error ->
         json_error(conn, 500, "Failed to get worker stats: #{inspect(error)}")
+    end
+  end
+
+  # Real-time throughput stats endpoint
+  get "/throughput" do
+    try do
+      # Coletar métricas em tempo real de todos os componentes
+      rate_limiter_metrics = case Middleware.RateLimiter.get_metrics() do
+        metrics when is_map(metrics) -> metrics
+        _ -> %{error: "unavailable"}
+      end
+      
+      request_handler_stats = case Middleware.RequestHandler.get_stats() do
+        stats when is_map(stats) -> stats
+        _ -> %{error: "unavailable"}
+      end
+      
+      worker_stats = Middleware.WorkerPool.get_worker_stats()
+      
+      # Calcular throughput médio baseado no uptime
+      uptime_seconds = case rate_limiter_metrics do
+        %{uptime_ms: uptime_ms} -> uptime_ms / 1000
+        _ -> 1
+      end
+      
+      avg_throughput = case rate_limiter_metrics do
+        %{total_requests: total} when total > 0 -> Float.round(total / uptime_seconds, 2)
+        _ -> 0.0
+      end
+      
+      throughput_stats = %{
+        timestamp: DateTime.utc_now() |> DateTime.to_iso8601(),
+        current_throughput: %{
+          average_req_per_second: avg_throughput,
+          rate_limit: Map.get(rate_limiter_metrics, :rate_limit, 0),
+          success_rate: Map.get(rate_limiter_metrics, :success_rate, 0),
+          queue_length: get_queue_metrics()
+        },
+        rate_limiter: rate_limiter_metrics,
+        request_handler: request_handler_stats,
+        workers: worker_stats,
+        system_load: %{
+          pending_requests: Map.get(request_handler_stats, :pending_requests, 0),
+          backpressure_status: case check_backpressure() do
+            :ok -> "normal"
+            {:error, reason} -> reason
+          end
+        }
+      }
+      
+      conn
+      |> put_resp_content_type("application/json")
+      |> send_resp(200, Jason.encode!(throughput_stats))
+    rescue
+      error ->
+        json_error(conn, 500, "Failed to get throughput stats: #{inspect(error)}")
     end
   end
 
@@ -263,8 +362,8 @@ defmodule Middleware.HttpServer do
 
   defp get_queue_metrics do
     case Redix.command(:redix, ["LLEN", "request_queue"]) do
-      {:ok, length} -> %{current_length: length}
-      _ -> %{current_length: "unknown", error: "redis_unavailable"}
+      {:ok, length} -> length
+      _ -> 0
     end
   end
 
@@ -301,13 +400,6 @@ defmodule Middleware.HttpServer do
     {:ok, UUID.uuid4()}
   end
 
-  defp enqueue_request(request_id, cpf, auth_header, body) do
-    Middleware.RequestHandler.enqueue_request(request_id, cpf, auth_header, body)
-  end
-
-  defp wait_for_response(request_id) do
-    Middleware.RequestHandler.wait_for_response(request_id, 120_000)
-  end
 
   defp json_error(conn, status, message) do
     conn
