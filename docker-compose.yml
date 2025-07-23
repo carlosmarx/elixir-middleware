@@ -1,0 +1,43 @@
+services:
+  # Middleware Elixir
+  middleware:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: elixir-middleware
+    ports:
+      - "4000:4000"
+    environment:
+      - MIX_ENV=dev
+      - PORT=4000
+      - REDIS_URL=redis://redis:6379
+      - RAILS_URL=https://sistema.novosaque.com.br/api/v1/simulations/balance_proposal_fgts
+      - RATE_LIMIT=3
+      - REQUEST_TIMEOUT=30000
+      - RAILS_TIMEOUT=25000
+    depends_on:
+      - redis
+    restart: unless-stopped
+    networks:
+      - middleware-network
+
+  # Redis
+  redis:
+    image: redis:7.2-alpine
+    container_name: redis-elixir-middleware
+    ports:
+      - "6389:6379"
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    restart: unless-stopped
+    networks:
+      - middleware-network
+    volumes:
+      - redis_data:/data
+
+networks:
+  middleware-network:
+    driver: bridge
+
+volumes:
+  redis_data:
+    driver: local
