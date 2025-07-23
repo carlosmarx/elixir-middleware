@@ -45,7 +45,7 @@ defmodule Middleware.HttpServer do
           rate_limit: 10,
           timeout_seconds: 120,
           elixir_version: System.version(),
-          workers: 3
+          workers: 6
         }
       }
 

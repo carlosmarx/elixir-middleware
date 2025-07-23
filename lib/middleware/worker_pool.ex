@@ -7,7 +7,7 @@ defmodule Middleware.WorkerPool do
   use Supervisor
   require Logger
 
-  @worker_count 3  # Número de workers simultâneos (reduzido para rate limiting)
+  @worker_count 6  # Número de workers simultâneos (reduzido para rate limiting)
 
   def start_link(_opts) do
     Supervisor.start_link(__MODULE__, :ok, name: __MODULE__)
