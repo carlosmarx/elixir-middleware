@@ -9,7 +9,7 @@ defmodule Middleware.Worker do
   require Logger
 
   @poll_interval 200  # Poll a cada 200ms (menos agressivo)
-  @rails_timeout 25_000  # 25 segundos para Rails
+  @rails_timeout 110_000  # 25 segundos para Rails
 
   # Client API
 

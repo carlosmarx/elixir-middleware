@@ -46,7 +46,7 @@ This is an Elixir middleware that sits between clients and a Rails API, implemen
 2. **Request Handler** (`lib/middleware/request_handler.ex`)
    - Manages request lifecycle and response coordination
    - Stores pending requests and waits for worker responses
-   - Handles request timeouts (30 seconds default)
+   - Handles request timeouts (120 seconds default)
 
 3. **Rate Limiter** (`lib/middleware/rate_limiter.ex`)
    - Token bucket implementation limiting to 3 requests/second
@@ -69,14 +69,14 @@ This is an Elixir middleware that sits between clients and a Rails API, implemen
 3. Worker picks up request from queue, checks rate limit
 4. If rate limit allows, worker calls Rails API; otherwise requeues request
 5. Worker delivers response back to client through RequestHandler
-6. Client receives Rails API response or timeout error after 30 seconds
+6. Client receives Rails API response or timeout error after 120 seconds
 
 ### Configuration
 
 - **Redis**: Runs on port 6389 (locally) or standard 6379 (Docker)
 - **Rate Limit**: 3 requests/second with burst capacity of 5
-- **Timeouts**: 30s total request timeout, 25s Rails API timeout
-- **Workers**: 3 concurrent workers polling queue
+- **Timeouts**: 120 total request timeout, 25s Rails API timeout
+- **Workers**: 10 concurrent workers polling queue
 - **Rails URL**: Configurable via `RAILS_URL` environment variable
 
 ### Key Dependencies

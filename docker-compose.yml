@@ -12,9 +12,9 @@ services:
       - PORT=4000
       - REDIS_URL=redis://redis:6379
       - RAILS_URL=https://sistema.novosaque.com.br/api/v1/simulations/balance_proposal_fgts
-      - RATE_LIMIT=3
-      - REQUEST_TIMEOUT=30000
-      - RAILS_TIMEOUT=25000
+      - RATE_LIMIT=10
+      - REQUEST_TIMEOUT=120000
+      - RAILS_TIMEOUT=110000
     depends_on:
       - redis
     restart: unless-stopped

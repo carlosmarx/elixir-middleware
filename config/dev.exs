@@ -26,6 +26,6 @@ config :middleware, Middleware.HttpServer,
 config :middleware,
   redis_url: System.get_env("REDIS_URL", "redis://localhost:6389"),
   rails_url: System.get_env("RAILS_URL", "https://sistema.novosaque.com.br/api/v1/simulations/balance_proposal_fgts"),
-  rate_limit: 3,
+  rate_limit: 10,
   request_timeout: 30_000,
   rails_timeout: 25_000

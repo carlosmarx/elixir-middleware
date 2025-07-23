@@ -7,9 +7,9 @@ defmodule Middleware.RateLimiter do
   use GenServer
   require Logger
 
-  @rate_limit 3  # 3 requisições por segundo
-  @bucket_size 5 # Burst capacity
-  @refill_interval 1000 # 1 segundo em ms
+  @rate_limit 10  # 10 requisições por segundo
+  @bucket_size 10 # Burst capacity
+  @refill_interval 100 # 0.1 segundo em ms
 
   # Client API
 

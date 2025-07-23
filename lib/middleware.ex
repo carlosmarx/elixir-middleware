@@ -6,7 +6,7 @@ defmodule Middleware do
   - Rate limiting global de 3 req/s para Rails
   - Fila Redis com chave composta requestID+CPF
   - Pooling síncrono via processes Elixir
-  - Timeout de 30 segundos por requisição
+  - Timeout de 120 segundos por requisição
   """
 
   use Application

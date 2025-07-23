@@ -7,7 +7,7 @@ defmodule Middleware.RequestHandler do
   use GenServer
   require Logger
 
-  @timeout 30_000 # 30 segundos
+  @timeout 120_000 # 120 segundos
 
   # Client API
 

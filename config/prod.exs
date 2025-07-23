@@ -29,6 +29,6 @@ config :logger,
 config :middleware,
   redis_url: System.get_env("REDIS_URL", "redis://redis:6389"),
   rails_url: System.get_env("RAILS_URL", "https://sistema.novosaque.com.br/api/v1/simulations/balance_proposal_fgts"),
-  rate_limit: String.to_integer(System.get_env("RATE_LIMIT", "3")),
-  request_timeout: String.to_integer(System.get_env("REQUEST_TIMEOUT", "30000")),
-  rails_timeout: String.to_integer(System.get_env("RAILS_TIMEOUT", "25000"))
+  rate_limit: String.to_integer(System.get_env("RATE_LIMIT", "10")),
+  request_timeout: String.to_integer(System.get_env("REQUEST_TIMEOUT", "120000")),
+  rails_timeout: String.to_integer(System.get_env("RAILS_TIMEOUT", "110000"))

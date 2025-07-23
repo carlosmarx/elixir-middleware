@@ -42,8 +42,8 @@ defmodule Middleware.HttpServer do
         },
         queue: queue_stats,
         config: %{
-          rate_limit: 3,
-          timeout_seconds: 30,
+          rate_limit: 10,
+          timeout_seconds: 120,
           elixir_version: System.version(),
           workers: 3
         }
@@ -156,7 +156,7 @@ defmodule Middleware.HttpServer do
 
   # Nova função que usa enqueue_and_wait atômica
   defp enqueue_and_wait(request_id, cpf, auth_header, body) do
-    Middleware.RequestHandler.enqueue_and_wait(request_id, cpf, auth_header, body, 30_000)
+    Middleware.RequestHandler.enqueue_and_wait(request_id, cpf, auth_header, body, 120_000)
   end
 
   # Worker stats endpoint - NOVO
@@ -306,7 +306,7 @@ defmodule Middleware.HttpServer do
   end
 
   defp wait_for_response(request_id) do
-    Middleware.RequestHandler.wait_for_response(request_id, 30_000)
+    Middleware.RequestHandler.wait_for_response(request_id, 120_000)
   end
 
   defp json_error(conn, status, message) do
